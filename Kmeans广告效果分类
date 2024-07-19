@@ -1,0 +1,58 @@
+# 加载必要的库
+library(dplyr)
+library(ggplot2)
+library(cluster)
+library(factoextra)
+library(corrplot)
+library(fmsb)
+
+# 加载数据
+data <- read.csv(file.choose(), sep="\t")
+
+# 删除空值
+data <- na.omit(data)
+
+# 计算相关性矩阵
+cor_matrix <- cor(data[, sapply(data, is.numeric)])
+
+# 使用热图展示相关性矩阵
+corrplot(cor_matrix, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, 
+         addCoef.col = "black", number.cex = 0.7, 
+         col = colorRampPalette(c("red", "white", "blue"))(200))
+
+# 删除平均停留时间列
+data <- data %>% select(-平均停留时间)
+
+# 数据标准化
+data_scaled <- scale(data[, sapply(data, is.numeric)])
+
+
+# 计算最佳聚类数
+fviz_nbclust(data_scaled, kmeans, method = "silhouette") +
+  theme_minimal() +
+  labs(subtitle = "Silhouette method")
+
+# 假设最佳聚类数为5
+set.seed(123)
+kmeans_result <- kmeans(data_scaled, centers = 3, nstart = 25)
+
+# 7. 针对聚类结果特征分析，计算各个聚类内部最显著特征值
+# 计算各聚类的中心点
+cluster_centers <- aggregate(data, by = list(cluster = kmeans_result$cluster), mean)
+cluster_centers
+
+# 8. 输出完整类别特征信息
+# 输出聚类结果和特征信息
+data_with_clusters <- cbind(data, cluster = kmeans_result$cluster)
+write.table(data_with_clusters, "clustered_data.txt", sep = "\t", row.names = FALSE)
+
+# 9. 各类别显著数值特征对比
+# 比较各类别显著特征
+cluster_comparison <- aggregate(data, by = list(cluster = kmeans_result$cluster), function(x) c(mean = mean(x), sd = sd(x)))
+cluster_comparison
+
+# 绘制极坐标系图
+fviz_cluster(kmeans_result, data = data_scaled, geom = "point", ellipse.type = "norm") +
+  theme_minimal() +
+  labs(title = "K-means Clustering with Polar Coordinates")
