@@ -1,0 +1,111 @@
+library(dplyr)
+library(arules)
+library(arulesSequences)
+library(echarts4r)
+
+# 创建示例数据集
+set.seed(123)
+users <- paste0("User", 1:100)
+products <- paste0("Product", 1:20)
+
+# 创建用户浏览商品的记录
+browse_data <- data.frame(
+  user = sample(users, 500, replace = TRUE),
+  product = sample(products, 500, replace = TRUE)
+)
+
+# 创建用户购买商品的记录
+purchase_data <- data.frame(
+  user = sample(users, 200, replace = TRUE),
+  product = sample(products, 200, replace = TRUE)
+)
+
+# 合并浏览和购买的数据
+combined_data <- rbind(
+  browse_data %>% mutate(action = "browse"),
+  purchase_data %>% mutate(action = "purchase")
+)
+
+# 为每个用户创建合并的事务，并去重
+combined_data <- combined_data %>%
+  mutate(item = paste(product, action, sep = "_")) %>%
+  select(user, item) %>%
+  distinct()
+
+combined_transactions <- split(combined_data$item, combined_data$user)
+combined_transactions <- as(combined_transactions, "transactions")
+
+# 检查事务数据
+inspect(combined_transactions)
+
+# 运行Apriori算法
+rules_apriori <- apriori(combined_transactions, parameter = list(supp = 0.01, conf = 0.5))
+inspect(head(sort(rules_apriori, by = "lift"), 10))
+
+# 提取Apriori规则并转为数据框
+apriori_rules_df <- as(rules_apriori, "data.frame")
+apriori_rules_df$lhs <- labels(lhs(rules_apriori))
+apriori_rules_df$rhs <- labels(rhs(rules_apriori))
+
+#FP-Growth
+fp <- fim4r(
+  combined_transactions,
+  method = "fpgrowth",
+  support = 0.1,
+  confidence = 0.8
+)
+
+fp_rules_df <- as(fp, "data.frame")
+apriori_rules_df$lhs <- labels(lhs(fp_rules_df))
+apriori_rules_df$rhs <- labels(rhs(fp_rules_df))
+
+# 运行Eclat算法
+rules_eclat <- eclat(combined_transactions, parameter = list(support = 0.01))
+inspect(head(sort(rules_eclat, by = "support"), 10))
+
+# 提取Eclat频繁项集并转为数据框
+eclat_itemsets_df <- as(rules_eclat, "data.frame")
+
+# 理解了，Eclat算法生成的是频繁项集而不是关联规则，因此没有 lhs 和 rhs。我们应该只提取支持度信息来比较。我们可以进行如下步骤来分析和可视化结果：
+
+# 比较
+comparison <- data.frame(
+  Method = c(rep("Apriori", nrow(apriori_rules_df)), rep("Eclat", nrow(eclat_itemsets_df),rep("FP", nrow(apriori_rules_df)))),
+  Support = c(apriori_rules_df$support, eclat_itemsets_df$support),
+  Confidence = c(apriori_rules_df$confidence, rep(NA, nrow(eclat_itemsets_df))), # Eclat没有置信度
+  Lift = c(apriori_rules_df$lift, rep(NA, nrow(eclat_itemsets_df))) # Eclat没有提升度
+)
+
+# 查看比较结果
+print(comparison)
+
+
+# 转换数据为图表格式
+apriori_chart_data <- apriori_rules_df %>%
+  arrange(desc(lift)) %>%
+  head(10) %>%
+  select(lhs, rhs, support, confidence, lift)
+
+# 将 lhs 和 rhs 转换为字符向量，以便在图中使用
+apriori_chart_data$lhs <- as.character(apriori_chart_data$lhs)
+apriori_chart_data$rhs <- as.character(apriori_chart_data$rhs)
+
+# 构建节点和边的数据框
+nodes <- data.frame(
+  name = unique(c(apriori_chart_data$lhs, apriori_chart_data$rhs))
+)
+
+edges <- data.frame(
+  source = apriori_chart_data$lhs,
+  target = apriori_chart_data$rhs,
+  value = apriori_chart_data$support
+)
+
+# 绘制关系图
+nodes %>%
+  e_charts(edges) %>%
+  e_graph(edges) %>%
+  e_graph_nodes(edges) %>%
+  e_graph_edges(source, target, value) %>%
+  e_tooltip() %>%
+  e_title("Apriori算法关联规则关系图", "")
