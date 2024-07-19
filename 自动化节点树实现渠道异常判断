@@ -1,0 +1,100 @@
+# Load required libraries
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(treemap)
+
+# Load data
+data <- fread(file.choose())
+
+str(data)
+
+data$date <- as.Date(data$date)
+
+# 1. 统计在一定周期内、特定指标下的数据环比变化量和环比变化率
+compute_change <- function(df, metric) {
+  df <- df %>%
+    arrange(date) %>%
+    mutate(
+      lag_metric = lag(get(channel)),
+      change_amount = get(channel) - lag_metric,
+      change_rate = (get(channel) - lag_metric) / lag_metric * 100
+    )
+  return(df)
+}
+
+# 2. 指定要分析日期并获得该日期及其前一天的数据
+analyze_date <- function(df, target_date) {
+  target_date <- as.Date(target_date)
+  df_filtered <- df %>%
+    filter(Date %in% c(target_date, target_date - 1))
+  return(df_filtered)
+}
+
+# 3. 以全站数据为基准，下探第1层级，并对指定日期和前一天数据做分类汇总
+summarize_level1 <- function(df, target_date, metric) {
+  df_filtered <- analyze_date(df, target_date)
+  summary <- df_filtered %>%
+    group_by(Level1) %>%
+    summarize(
+      metric_sum = sum(get(metric), na.rm = TRUE),
+      change_amount = sum(change_amount, na.rm = TRUE),
+      change_rate = sum(change_rate, na.rm = TRUE)
+    )
+  return(summary)
+}
+
+# 4. 计算第1层级维度下的变化量排序，并分别获得环比变化量最大和最小情况下的维度名称，变换量和变化率
+get_extreme_changes <- function(summary) {
+  max_change <- summary %>%
+    filter(change_amount == max(change_amount, na.rm = TRUE))
+  
+  min_change <- summary %>%
+    filter(change_amount == min(change_amount, na.rm = TRUE))
+  
+  return(list(max_change = max_change, min_change = min_change))
+}
+
+# 5. 循环上述步骤，直至所有层级都计算完成
+analyze_all_levels <- function(df, target_date, metric) {
+  levels <- unique(df$Level)
+  results <- list()
+  
+  for (level in levels) {
+    df_level <- df %>%
+      filter(Level == level)
+    
+    summary <- summarize_level1(df_level, target_date, metric)
+    extremes <- get_extreme_changes(summary)
+    
+    results[[level]] <- list(summary = summary, extremes = extremes)
+  }
+  
+  return(results)
+}
+
+# 6. 用树形图展示所有层级下的变化量最大和最小信息，包括维度名称，环比变换量，环比变化率，贡献率等信息，以及潜在因子
+plot_treemap <- function(results) {
+  treemap_data <- do.call(rbind, lapply(results, function(x) {
+    data.frame(
+      Level = names(x),
+      Dimension = c(x$extremes$max_change$Level1, x$extremes$min_change$Level1),
+      ChangeAmount = c(x$extremes$max_change$change_amount, x$extremes$min_change$change_amount),
+      ChangeRate = c(x$extremes$max_change$change_rate, x$extremes$min_change$change_rate)
+    )
+  }))
+  
+  treemap(treemap_data,
+          index = c("Level", "Dimension"),
+          vSize = "ChangeAmount",
+          vColor = "ChangeRate",
+          type = "value")
+}
+
+# Example usage
+target_date <- as.Date('2018-05-15')
+metric <- 'channel'  # Replace with actual metric column name
+
+data <- compute_change(data, metric)
+results <- analyze_all_levels(data, target_date, metric)
+plot_treemap(results)
