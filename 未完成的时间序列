@@ -1,0 +1,428 @@
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(tseries)
+library(TSA)
+library(plotly)
+
+# Read data
+data <- read_csv(file.choose())
+
+# Data preprocessing
+data$date <- as.Date(data$date, format="%Y-%m-%d")
+data <- data %>%
+  arrange(date) %>%
+  filter(!is.na(close))
+
+# Exploratory Data Analysis (EDA)
+summary(data)
+ggplot(data, aes(x=date, y=close)) + geom_line() + labs(title="NVIDIA Stock Prices", x="Date", y="Close Price")
+
+# Stationarity Test
+adf_test <- adf.test(data$close)
+print(adf_test)
+# 让我们详细解释这个Augmented Dickey-Fuller (ADF) 测试的输出：
+# ```
+# Augmented Dickey-Fuller Test
+# 
+# data:  data$close
+# Dickey-Fuller = 3.755, Lag order = 13, p-value = 0.99
+# alternative hypothesis: stationary
+# ```
+### 输出解析
+# **Test Type**: 
+#   - `Augmented Dickey-Fuller Test`: 指定了执行的是增广迪基-富勒检验，用于检测时间序列是否平稳。
+# **Test Statistic**:
+#   - `Dickey-Fuller = 3.755`: 这是ADF测试的统计量。测试统计量是用于比较原假设（时间序列具有单位根，即非平稳）的计算值。
+# 
+# **Lag Order**:
+#   - `Lag order = 13`: 指示了使用的滞后阶数。滞后阶数是为了捕捉数据中可能存在的自相关性。
+# 
+# **P-value**:
+#   - `p-value = 0.99`: 这是与测试统计量对应的p值。p值表示在原假设为真的情况下，观察到测试统计量或更极端值的概率。
+# - 在这个例子中，p值为0.99，远大于常用的显著性水平（如0.05）。这表明我们不能拒绝原假设，即时间序列存在单位根，是非平稳的。
+# 
+# **Alternative Hypothesis**:
+#   - `alternative hypothesis: stationary`: 这是备择假设，表示时间序列是平稳的。
+# **Dickey-Fuller = 3.755**：统计量的值本身无意义，主要用于与临界值比较。
+# **p-value = 0.99**：这个p值非常高，远大于0.05的显著性水平。因此，我们无法拒绝原假设（时间序列存在单位根）。
+# 平稳时间序列的均值和方差在时间上保持恒定，并且时间序列的统计性质不随时间变化。许多时间序列分析和预测方法（如ARIMA模型）都假设数据是平稳的。如果数据是非平稳的，通常需要进行差分或其他变换使其平稳。
+
+
+
+# Differencing to achieve stationarity if needed
+if (adf_test$p.value > 0.05) {
+  data <- data %>% mutate(Close_diff = c(NA, NA, diff(close, differences = 2)))
+} else {
+  data$Close_diff <- data$close
+}
+# 这是因为 diff(close, differences = 2) 计算了两次差分，导致向量长度比原始向量少了两个元素，再加上一个 NA，最终长度为 2368。为了确保新列长度与数据框行数匹配，可以用 NA 填充开头两个缺失值。
+#   
+#   这是一个条件语句，检查ADF测试的p值是否大于0.05。如果p值大于0.05，表示时间序列数据非平稳。
+# data <- data %>% mutate(Close_diff = c(NA, diff(close, differences = 1))):
+#   
+#   如果时间序列数据非平稳，这行代码将对数据进行一次差分处理。
+# data %>% mutate(...) 使用dplyr包的管道操作符，向数据框data中添加新的列。
+# Close_diff = c(NA, diff(close, differences = 1)) 创建一个新的列Close_diff，其中包含一次差分后的close列数据。
+# diff(close, differences = 1) 计算close列的一次差分。
+# c(NA, ...) 在差分结果前面添加一个NA，因为一次差分会减少一个数据点。
+# else { data$Close_diff <- data$close }:
+#   
+#   如果时间序列数据已经平稳（即ADF测试的p值小于等于0.05），这行代码将原始的close列数据直接赋值给Close_diff列。
+# differences = 1:
+#   
+#   这是一次差分，即计算当前值与前一个值之间的差。
+# differences = 2:
+#   
+#   这是二次差分，即对一次差分后的序列再次进行差分
+# differences = 3 及更高:
+#   
+#   这些是高次差分，即对前一次差分后的序列进行多次差分。
+# 可以看到，随着差分次数的增加，序列中的趋势成分被逐渐去除，数据变得更加平稳。
+# 
+# 在实际应用中，选择差分次数需要根据数据的特性和分析的需求来决定。通常通过绘制差分后的序列图或进行统计测试（如ADF测试）来判断数据的平稳性。
+# 一般来说二次就够了。
+
+# Remove NA values created by differencing
+data <- data %>% filter(!is.na(Close_diff))
+#这个操作会导致第一个值没有前一个值可减，因此第一个差分值会是NA。
+
+adf_test_diff <- adf.test(data$Close_diff)
+print(adf_test_diff)
+
+# 使用 auto.arima 自动选择最佳模型
+library(forecast)
+
+best_model <- auto.arima(data$Close_diff, max.p = 5, max.q = 5, max.order = 10, stepwise = FALSE, approximation = FALSE)
+best_aic <- AIC(best_model)
+best_bic <- BIC(best_model)
+best_order <- arimaorder(best_model)
+
+aic_bic_results[[paste(best_order[1], best_order[3], sep = ",")]] <- c(best_aic, best_bic)
+
+print(aic_bic_results)
+
+# 尝试不同初始值
+aic_bic_results <- list()
+initial_values <- seq(-1, 1, length.out = 10) # 定义初始值范围
+
+for (p in 0:5) {
+  for (q in 0:5) {
+    best_aic <- Inf
+    best_model <- NULL
+    for (init_val in initial_values) {
+      tryCatch({
+        if (p + q > 0) {
+          model <- arima(data$Close_diff, order = c(p, 0, q), fixed = rep(init_val, p + q))
+        } else {
+          model <- arima(data$Close_diff, order = c(p, 0, q))
+        }
+        current_aic <- AIC(model)
+        if (current_aic < best_aic) {
+          best_aic <- current_aic
+          best_model <- model
+        }
+      }, error = function(e) {
+        message(paste("Error for p=", p, " q=", q, " with init=", init_val, ": ", e$message))
+      })
+    }
+    if (!is.null(best_model)) {
+      aic_bic_results[[paste(p, q, sep = ",")]] <- c(AIC(best_model), BIC(best_model))
+    }
+  }
+}
+
+print(aic_bic_results)
+# p、q数值范围选择
+# 常见实践：在实际应用中，ARIMA模型的阶数通常不会太高，因为过高的阶数会导致模型过于复杂，从而难以解释并且计算成本高。0到5是一个常见且合理的取值范围，能够涵盖大多数实际情况。
+# 模型复杂度与计算成本：随着参数阶数的增加，模型的复杂度和计算成本都会显著增加。选择0到5可以在保证模型足够灵活的同时，避免过高的计算成本。
+# 经验与先验知识：在时间序列分析中，通常根据数据的特性和经验来选择一个合理的范围。对于大多数金融时间序列数据，0到5的范围已经足够涵盖常见的模式。
+# 过拟合与欠拟合：通过选择一个较小的范围，可以减少过拟合的风险。过高的阶数可能会导致模型过拟合，而过低的阶数可能会导致欠拟合。选择0到5的范围是一种平衡。
+# tryCatch({ ... }, error = function(e) {})：
+# 用于捕捉和处理在尝试拟合模型时可能出现的错误。这样即使某些参数组合无法拟合模型，代码也不会中断，会继续尝试其他组合。
+# AIC和BIC的作用
+# AIC：主要用于比较不同模型的拟合优度。AIC值越小，模型的拟合效果越好。
+# BIC：在AIC的基础上增加了对样本量的惩罚项，更加严格地惩罚复杂模型。BIC值越小，模型的拟合效果越好。
+# 模型拟合和预测性能：
+# 仅仅依靠AIC和BIC值并不总是足够，还应结合其他模型评估指标，如预测准确度、残差分析等，来全面评估模型的表现。
+# AIC vs. BIC：
+# AIC更倾向于选择较复杂的模型，因为它的惩罚项相对较小。
+# BIC更倾向于选择较简单的模型，因为它的惩罚项相对较大，尤其在样本量较大时。
+# 为什么d始终为0？
+# 在你当前的代码中，d 的值始终为 0，这是因为你指定了 order = c(p, 0, q)。在 ARIMA 模型中，d 表示差分的次数，用于使时间序列平稳。如果你的时间序列已经通过预处理（例如差分）变得平稳，则 d 可以设为 0。
+# 
+# 但是，如果你不确定时间序列是否平稳，或者希望自动确定最佳的差分次数，可以使用自动差分的方法来选择最佳的 d 值。例如，使用 forecast 包中的 auto.arima 函数，它可以自动选择最佳的 p、d 和 q 值。
+
+
+library(forecast)
+
+# 使用 auto.arima 自动选择最佳 p, d, q 值
+best_model <- auto.arima(data$Close_diff, max.p = 5, max.q = 5, max.d = 2, stepwise = FALSE, approximation = FALSE)
+best_aic <- AIC(best_model)
+best_bic <- BIC(best_model)
+best_order <- arimaorder(best_model)
+
+aic_bic_results <- list()
+aic_bic_results[[paste(best_order[1], best_order[2], best_order[3], sep = ",")]] <- c(best_aic, best_bic)
+
+print(aic_bic_results)
+
+# 手动选择
+aic_bic_results <- list()
+initial_values <- seq(-1, 1, length.out = 10) # 定义初始值范围
+
+for (p in 0:5) {
+  for (d in 0:2) {  # 尝试不同的 d 值
+    for (q in 0:5) {
+      best_aic <- Inf
+      best_model <- NULL
+      for (init_val in initial_values) {
+        tryCatch({
+          if (p + q > 0) {
+            model <- arima(data$Close_diff, order = c(p, d, q), fixed = rep(init_val, p + q))
+          } else {
+            model <- arima(data$Close_diff, order = c(p, d, q))
+          }
+          current_aic <- AIC(model)
+          if (current_aic < best_aic) {
+            best_aic <- current_aic
+            best_model <- model
+          }
+        }, error = function(e) {
+          message(paste("Error for p=", p, " d=", d, " q=", q, " with init=", init_val, ": ", e$message))
+        })
+      }
+      if (!is.null(best_model)) {
+        aic_bic_results[[paste(p, d, q, sep = ",")]] <- c(AIC(best_model), BIC(best_model))
+      }
+    }
+  }
+}
+
+print(aic_bic_results)
+
+
+
+
+
+
+
+
+
+
+
+# AIC and BIC to find optimal p, q values
+aic_bic_results <- list()
+for (p in 0:5) {
+  for (q in 0:5) {
+    tryCatch({
+      model <- arima(data$Close_diff, order=c(p,0,q),control = list(maxit = 1000))
+      aic_bic_results[[paste(p,q,sep=",")]] <- c(AIC(model), BIC(model))
+    }, error = function(e) {})
+  }
+}
+# p、q数值范围选择
+# 常见实践：在实际应用中，ARIMA模型的阶数通常不会太高，因为过高的阶数会导致模型过于复杂，从而难以解释并且计算成本高。0到5是一个常见且合理的取值范围，能够涵盖大多数实际情况。
+# 模型复杂度与计算成本：随着参数阶数的增加，模型的复杂度和计算成本都会显著增加。选择0到5可以在保证模型足够灵活的同时，避免过高的计算成本。
+# 经验与先验知识：在时间序列分析中，通常根据数据的特性和经验来选择一个合理的范围。对于大多数金融时间序列数据，0到5的范围已经足够涵盖常见的模式。
+# 过拟合与欠拟合：通过选择一个较小的范围，可以减少过拟合的风险。过高的阶数可能会导致模型过拟合，而过低的阶数可能会导致欠拟合。选择0到5的范围是一种平衡。
+# tryCatch({ ... }, error = function(e) {})：
+# 用于捕捉和处理在尝试拟合模型时可能出现的错误。这样即使某些参数组合无法拟合模型，代码也不会中断，会继续尝试其他组合。
+# AIC和BIC的作用
+# AIC：主要用于比较不同模型的拟合优度。AIC值越小，模型的拟合效果越好。
+# BIC：在AIC的基础上增加了对样本量的惩罚项，更加严格地惩罚复杂模型。BIC值越小，模型的拟合效果越好。
+# 模型拟合和预测性能：
+# 仅仅依靠AIC和BIC值并不总是足够，还应结合其他模型评估指标，如预测准确度、残差分析等，来全面评估模型的表现。
+# AIC vs. BIC：
+# AIC更倾向于选择较复杂的模型，因为它的惩罚项相对较小。
+# BIC更倾向于选择较简单的模型，因为它的惩罚项相对较大，尤其在样本量较大时。
+
+aic_bic_df <- do.call(rbind, lapply(names(aic_bic_results), function(x) data.frame(pq=x, aic=aic_bic_results[[x]][1], bic=aic_bic_results[[x]][2])))
+aic_bic_df <- aic_bic_df[order(aic_bic_df$aic),]
+print(aic_bic_df)
+
+# Decompose the time series
+decomposed <- decompose(ts(data$close, frequency=365))
+plot(decomposed)
+# ts(data$close, frequency=365):
+#   这是在将 data 数据框中的 close 列转换为时间序列对象。
+# frequency=365 表示数据的频率是 365，通常用于每天的数据（例如，一年的每天）。
+# decompose(ts(data$close, frequency=365)):
+#   这个函数将时间序列数据分解成三个部分：趋势（trend）、季节性（seasonal）和随机部分（random）。
+# 结果会存储在 decomposed 对象中。
+# 这个命令绘制分解后的时间序列数据。
+# 图形通常包括四个部分：
+# 原始数据
+# 趋势成分
+# 季节性成分
+# 随机成分
+
+# 转换为时间序列对象
+time_series_data <- ts(data$Close_diff, frequency=365)
+
+# 绘制差分后的时间序列图
+plot(time_series_diff)
+
+# 检查差分后的时间序列的平稳性
+adf_test <- adf.test(time_series_data)
+print(adf_test)
+
+# 二阶差分
+data$Close_diff2 <- diff(data$Close_diff)
+data <- na.omit(data)
+
+# 转换为时间序列对象
+time_series_data_diff2 <- ts(data$Close_diff2, frequency=365)
+
+# 绘制二阶差分后的时间序列图
+plot(time_series_data_diff2)
+
+# 检查二阶差分后的时间序列的平稳性
+adf_test_diff2 <- adf.test(time_series_data_diff2)
+print(adf_test_diff2)
+
+# 检查数据的基本统计信息
+summary(data$Close_diff)
+summary(data$Close_diff2)  # 如果进行了二阶差分
+
+# 绘制数据图表以可视化数据
+plot(data$Close_diff, type = "l")
+plot(data$Close_diff2, type = "l")  # 如果进行了二阶差分
+
+
+
+# Select the best model based on AIC/BIC
+best_pq <- strsplit(aic_bic_df$pq[1], ",")[[1]]
+best_p <- as.integer(best_pq[1])
+best_q <- as.integer(best_pq[2])
+best_model <- arima(time_series_data, order=c(best_p,0,best_q))
+
+# 检查模型摘要
+summary(best_model)
+
+# 使用拟合的模型进行预测，预测未来100天
+forecasted_values <- forecast(best_model, h=100)
+
+# 打印预测结果
+print(forecasted_values)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Forecast for the next 100 days
+forecasted_values <- forecast(best_model, h=100)
+
+# Create interactive plot
+plot_data <- data.frame(Date = c(data$Date, seq(max(data$Date) + 1, by = "day", length.out = 100)),
+                        Close = c(data$Close, forecasted_values$mean))
+
+plot <- plot_ly(plot_data, x = ~Date, y = ~Close, type = 'scatter', mode = 'lines') %>%
+  layout(title = 'NVIDIA Stock Price Forecast',
+         xaxis = list(title = 'Date'),
+         yaxis = list(title = 'Close Price'))
+
+
+adf_test_diff <- adf.test(data$Close_diff)
+print(adf_test_diff)
+
+
+# Use auto.arima to find the best model
+best_model <- auto.arima(data$Close_diff)
+
+# Print the model summary
+summary(best_model)
+
+# Decompose the time series
+decomposed <- decompose(ts(data$close, frequency=365))
+plot(decomposed)
+
+# Forecast for the next 100 days
+forecasted_values <- forecast(best_model, h=100)
+
+# Convert differenced forecast back to original scale
+last_close <- tail(data$Close, 1)
+forecasted_values$mean <- cumsum(forecasted_values$mean) + last_close
+
+# Create interactive plot
+plot_data <- data.frame(Date = c(data$date, seq(max(data$date) + 1, by = "day", length.out = 100)),
+                        Close = c(data$close, forecasted_values$mean))
+
+plot <- plot_ly(plot_data, x = ~Date, y = ~Close, type = 'scatter', mode = 'lines') %>%
+  layout(title = 'NVIDIA Stock Price Forecast',
+         xaxis = list(title = 'Date'),
+         yaxis = list(title = 'Close Price'))
+
+
+
+
+
+
+# 检查数据结构
+str(data)
+summary(data$Close_diff)
+
+# AIC 和 BIC 计算
+aic_bic_results <- list()
+for (p in 0:5) {
+  for (q in 0:5) {
+    tryCatch({
+      model <- arima(data$Close_diff, order=c(p,0,q))
+      aic_bic_results[[paste(p,q,sep=",")]] <- c(AIC(model), BIC(model))
+    }, error = function(e) {
+      message(paste("Error for p=", p, " q=", q, ": ", e$message))
+    })
+  }
+}
+
+# 输出结果
+print(aic_bic_results)
