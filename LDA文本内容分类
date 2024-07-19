@@ -1,0 +1,57 @@
+# 安装必要的包
+install.packages("tm")
+install.packages("topicmodels")
+install.packages("jiebaR")
+install.packages("slam")
+
+library(tm)
+library(topicmodels)
+library(jiebaR)
+library(slam)
+library(Matrix)
+
+# 读取数据
+text_data <- readLines(file.choose(), encoding = "UTF-8")
+
+# 创建分词器
+cutter <- worker()
+
+# 分词
+seg_words <- lapply(text_data, function(x) segment(x, cutter))
+
+# 去除停用词、语气词和无实意单词
+stop_words <- c("的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一个", "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好", "自己")
+seg_words <- lapply(seg_words, function(x) x[!(x %in% stop_words)])
+
+# 去除空文档
+seg_words <- seg_words[sapply(seg_words, length) > 0]
+
+# 创建语料库
+corpus <- Corpus(VectorSource(lapply(seg_words, paste, collapse = " ")))
+
+# 创建词袋模型
+dtm <- DocumentTermMatrix(corpus)
+
+# 去除空文档
+dtm <- dtm[rowSums(as.matrix(dtm)) > 0, ]
+
+# 将词袋矩阵转换为稀疏矩阵
+sparse_dtm <- as(dtm, "sparseMatrix")
+
+# 建立LDA模型
+lda_model <- LDA(sparse_dtm, k = 5) # 假设我们要提取5个主题
+
+# 打印主题
+terms(lda_model, 10) # 每个主题显示10个关键词
+
+# 对新文本数据进行主题分类预测
+new_text <- file.choose()
+new_seg <- segment(new_text, cutter)
+new_seg <- new_seg[!(new_seg %in% stop_words)]
+new_corpus <- Corpus(VectorSource(paste(new_seg, collapse = " ")))
+new_dtm <- DocumentTermMatrix(new_corpus)
+new_sparse_dtm <- as(new_dtm, "sparseMatrix")
+
+# 预测新文本的主题分布
+new_topic <- posterior(lda_model, new_sparse_dtm)
+new_topic$topics
